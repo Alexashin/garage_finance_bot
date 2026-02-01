@@ -1,0 +1,84 @@
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+.python-version
+
+# =========================
+# Environment variables
+# =========================
+.env
+.env.*
+!.env.example
+
+# =========================
+# Logs
+# =========================
+logs/
+*.log
+
+# =========================
+# Database
+# =========================
+*.sqlite
+*.db
+pgdata/
+
+# =========================
+# Alembic
+# =========================
+alembic/versions/__pycache__/
+alembic/versions/*.pyc
+
+# =========================
+# Docker
+# =========================
+*.pid
+docker-compose.override.yml
+
+# =========================
+# IDEs
+# =========================
+.idea/
+.vscode/
+*.code-workspace
+
+# =========================
+# OS
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Archives
+# =========================
+*.zip
+*.tar
+*.tar.gz
+
+# =========================
+# Test / coverage
+# =========================
+.coverage
+htmlcov/
+.pytest_cache/
+
+# =========================
+# Mypy / Ruff / Pyright
+# =========================
+.mypy_cache/
+.ruff_cache/
+.pyright/
