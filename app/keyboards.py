@@ -6,7 +6,7 @@ from aiogram.types import KeyboardButton, ReplyKeyboardMarkup
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📈 Доход"), KeyboardButton(text="📉 Расход")],
+            [KeyboardButton(text="🟢 Доход"), KeyboardButton(text="🔴 Расход")],
             [KeyboardButton(text="🛡 Резерв"), KeyboardButton(text="📊 Отчёты")],
             [KeyboardButton(text="👥 Пользователи"), KeyboardButton(text="ℹ️ Баланс")],
         ],
@@ -38,7 +38,7 @@ def confirm_menu() -> ReplyKeyboardMarkup:
 def reserve_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📈 В резерв"), KeyboardButton(text="📉 Из резерва")],
+            [KeyboardButton(text="🟢 В резерв"), KeyboardButton(text="🔴 Из резерва")],
             [KeyboardButton(text="🔙 Назад")],
         ],
         resize_keyboard=True,
@@ -57,8 +57,8 @@ def reports_menu() -> ReplyKeyboardMarkup:
 def users_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="📋 Список"), KeyboardButton(text="📈 Добавить")],
-            [KeyboardButton(text="📉 Удалить"), KeyboardButton(text="🔙 Назад")],
+            [KeyboardButton(text="📋 Список"), KeyboardButton(text="🟢 Добавить")],
+            [KeyboardButton(text="🔴 Удалить"), KeyboardButton(text="🔙 Назад")],
         ],
         resize_keyboard=True,
     )

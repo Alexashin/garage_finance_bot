@@ -62,7 +62,7 @@ async def users_list(message: Message, session: AsyncSession):
     await message.answer("\n".join(lines), reply_markup=users_menu())
 
 
-@router.message(lambda m: m.text == "📈 Добавить")
+@router.message(lambda m: m.text == "🟢 Добавить")
 async def users_add_start(message: Message, session: AsyncSession, state: FSMContext):
     if not await _is_owner(session, message.from_user.id):
         await message.answer("⛔ Только владелец.", reply_markup=main_menu())
@@ -141,7 +141,7 @@ async def users_add_role(message: Message, session: AsyncSession, state: FSMCont
     await message.answer("✅ Пользователь добавлен.", reply_markup=users_menu())
 
 
-@router.message(lambda m: m.text == "📉 Удалить")
+@router.message(lambda m: m.text == "🔴 Удалить")
 async def users_del_start(message: Message, session: AsyncSession, state: FSMContext):
     if not await _is_owner(session, message.from_user.id):
         await message.answer("⛔ Только владелец.", reply_markup=main_menu())

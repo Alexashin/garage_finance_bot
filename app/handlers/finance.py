@@ -31,7 +31,7 @@ async def cancel_any(message: Message, state: FSMContext):
 
 
 # ---------- INCOME ----------
-@router.message(lambda m: m.text == "📈 Доход")
+@router.message(lambda m: m.text == "🟢 Доход")
 async def start_income(message: Message, session: AsyncSession, state: FSMContext):
     repo = Repo(session)
     user = await repo.get_user_by_tg(message.from_user.id)
@@ -147,7 +147,7 @@ async def income_confirm(message: Message, session: AsyncSession, state: FSMCont
 
 
 # ---------- EXPENSE ----------
-@router.message(lambda m: m.text == "📉 Расход")
+@router.message(lambda m: m.text == "🔴 Расход")
 async def start_expense(message: Message, session: AsyncSession, state: FSMContext):
     repo = Repo(session)
     user = await repo.get_user_by_tg(message.from_user.id)
@@ -282,7 +282,7 @@ async def reserve_main(message: Message, session: AsyncSession):
     await message.answer("🛡 Резерв\n\n" + text, reply_markup=reserve_menu())
 
 
-@router.message(lambda m: m.text == "📈 В резерв")
+@router.message(lambda m: m.text == "🟢 В резерв")
 async def reserve_add_start(message: Message, session: AsyncSession, state: FSMContext):
     repo = Repo(session)
     user = await repo.get_user_by_tg(message.from_user.id)
@@ -332,7 +332,7 @@ async def reserve_add_amount(
     await message.answer("✅ Переведено в резерв.\n\n" + text, reply_markup=main_menu())
 
 
-@router.message(lambda m: m.text == "📉 Из резерва")
+@router.message(lambda m: m.text == "🔴 Из резерва")
 async def reserve_remove_start(
     message: Message, session: AsyncSession, state: FSMContext
 ):
