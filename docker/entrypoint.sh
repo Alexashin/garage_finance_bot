@@ -4,7 +4,6 @@ set -e
 # Wait a bit just in case (db healthcheck already used)
 
 # Run alembic migrations
-alembic upgrade head
-
+python -m app.migrate
 # Start bot
 python -m app

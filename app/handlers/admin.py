@@ -62,14 +62,16 @@ async def users_list(message: Message, session: AsyncSession):
     await message.answer("\n".join(lines), reply_markup=users_menu())
 
 
-@router.message(lambda m: m.text == "➕ Добавить")
+@router.message(lambda m: m.text == "📈 Добавить")
 async def users_add_start(message: Message, session: AsyncSession, state: FSMContext):
     if not await _is_owner(session, message.from_user.id):
         await message.answer("⛔ Только владелец.", reply_markup=main_menu())
         return
 
     await state.set_state(UserAdminFlow.add_id)
-    await message.answer("Введите Telegram ID пользователя (число):", reply_markup=cancel_menu())
+    await message.answer(
+        "Введите Telegram ID пользователя (число):", reply_markup=cancel_menu()
+    )
 
 
 @router.message(UserAdminFlow.add_id)
@@ -86,7 +88,9 @@ async def users_add_id(message: Message, session: AsyncSession, state: FSMContex
 
     await state.update_data(new_tg_id=int(t))
     await state.set_state(UserAdminFlow.add_name)
-    await message.answer("Имя/ник (как будет отображаться в боте):", reply_markup=cancel_menu())
+    await message.answer(
+        "Имя/ник (как будет отображаться в боте):", reply_markup=cancel_menu()
+    )
 
 
 @router.message(UserAdminFlow.add_name)
@@ -98,7 +102,9 @@ async def users_add_name(message: Message, session: AsyncSession, state: FSMCont
 
     name = (message.text or "").strip()
     if len(name) < 2:
-        await message.answer("Слишком коротко. Введите имя ещё раз.", reply_markup=cancel_menu())
+        await message.answer(
+            "Слишком коротко. Введите имя ещё раз.", reply_markup=cancel_menu()
+        )
         return
 
     await state.update_data(new_name=name)
@@ -115,14 +121,18 @@ async def users_add_role(message: Message, session: AsyncSession, state: FSMCont
 
     role = _role_from_text(message.text)
     if not role:
-        await message.answer("Введите роль: owner / viewer / worker", reply_markup=cancel_menu())
+        await message.answer(
+            "Введите роль: owner / viewer / worker", reply_markup=cancel_menu()
+        )
         return
 
     data = await state.get_data()
     repo = Repo(session)
     existing = await repo.get_user_by_tg(int(data["new_tg_id"]))
     if existing:
-        await message.answer("Этот Telegram ID уже есть в базе.", reply_markup=users_menu())
+        await message.answer(
+            "Этот Telegram ID уже есть в базе.", reply_markup=users_menu()
+        )
         await state.clear()
         return
 
@@ -131,14 +141,16 @@ async def users_add_role(message: Message, session: AsyncSession, state: FSMCont
     await message.answer("✅ Пользователь добавлен.", reply_markup=users_menu())
 
 
-@router.message(lambda m: m.text == "➖ Удалить")
+@router.message(lambda m: m.text == "📉 Удалить")
 async def users_del_start(message: Message, session: AsyncSession, state: FSMContext):
     if not await _is_owner(session, message.from_user.id):
         await message.answer("⛔ Только владелец.", reply_markup=main_menu())
         return
 
     await state.set_state(UserAdminFlow.del_id)
-    await message.answer("Введите Telegram ID пользователя для отключения:", reply_markup=cancel_menu())
+    await message.answer(
+        "Введите Telegram ID пользователя для отключения:", reply_markup=cancel_menu()
+    )
 
 
 @router.message(UserAdminFlow.del_id)
@@ -156,4 +168,6 @@ async def users_del_id(message: Message, session: AsyncSession, state: FSMContex
     repo = Repo(session)
     ok = await repo.delete_user(int(t))
     await state.clear()
-    await message.answer("✅ Отключен." if ok else "Не найден.", reply_markup=users_menu())
+    await message.answer(
+        "✅ Отключен." if ok else "Не найден.", reply_markup=users_menu()
+    )
