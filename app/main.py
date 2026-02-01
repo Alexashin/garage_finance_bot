@@ -9,7 +9,8 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from app.bootstrap import bootstrap_data
 from app.db import create_engine_and_session
 from app.logging_config import setup_logging
-from app.middlewares import DbSessionMiddleware
+from app.middlewares.db_session import DbSessionMiddleware
+from app.middlewares.user import UserMiddleware
 from app.settings import Settings
 
 from app.handlers import admin, common, finance, reports
@@ -27,6 +28,7 @@ async def main() -> None:
     engine, session_maker = create_engine_and_session(settings)
 
     dp.update.middleware(DbSessionMiddleware(session_maker))
+    dp.update.middleware(UserMiddleware())
 
     # Routers
     dp.include_router(common.router)

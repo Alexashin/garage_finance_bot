@@ -4,7 +4,8 @@ import logging
 
 from aiogram import Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.keyboards import cancel_menu, main_menu, users_menu
@@ -13,22 +14,19 @@ from app.repository import Repo
 from app.states import UserAdminFlow
 
 logger = logging.getLogger(__name__)
+audit = logging.getLogger("audit")
 router = Router()
 
 
-def _role_from_text(t: str) -> UserRole | None:
-    t = (t or "").strip().lower()
-    mapping = {
-        "owner": UserRole.owner,
-        "viewer": UserRole.viewer,
-        "worker": UserRole.worker,
-        "владелец": UserRole.owner,
-        "смотреть": UserRole.viewer,
-        "вьювер": UserRole.viewer,
-        "работяга": UserRole.worker,
-        "мастер": UserRole.worker,
-    }
-    return mapping.get(t)
+ROLE_RU = {
+    UserRole.owner: "Владелец",
+    UserRole.viewer: "Наблюдатель",
+    UserRole.worker: "Работник",
+}
+
+
+def role_ru(role: UserRole) -> str:
+    return ROLE_RU.get(role, role.value)
 
 
 async def _is_owner(session: AsyncSession, tg_id: int) -> bool:
@@ -37,10 +35,20 @@ async def _is_owner(session: AsyncSession, tg_id: int) -> bool:
     return bool(u and u.role == UserRole.owner)
 
 
+def roles_inline_kb(prefix: str = "role") -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Владелец", callback_data=f"{prefix}:owner")
+    kb.button(text="Работник", callback_data=f"{prefix}:worker")
+    kb.button(text="Наблюдатель", callback_data=f"{prefix}:viewer")
+    kb.adjust(1)
+    return kb
+
+
 @router.message(lambda m: m.text == "👥 Пользователи")
-async def users_main(message: Message, session: AsyncSession, state: FSMContext):
+async def users_main(message: Message, session: AsyncSession, state: FSMContext, user):
     if not await _is_owner(session, message.from_user.id):
-        await message.answer("⛔ Только владелец.", reply_markup=main_menu())
+        audit.info("auth.denied | tg_id=%s | action=users_main", message.from_user.id)
+        await message.answer("⛔ Только владелец.", reply_markup=main_menu(user.role))
         return
 
     await state.clear()
@@ -48,9 +56,10 @@ async def users_main(message: Message, session: AsyncSession, state: FSMContext)
 
 
 @router.message(lambda m: m.text == "📋 Список")
-async def users_list(message: Message, session: AsyncSession):
+async def users_list(message: Message, session: AsyncSession, user):
     if not await _is_owner(session, message.from_user.id):
-        await message.answer("⛔ Только владелец.", reply_markup=main_menu())
+        audit.info("auth.denied | tg_id=%s | action=users_list", message.from_user.id)
+        await message.answer("⛔ Только владелец.", reply_markup=main_menu(user.role))
         return
 
     repo = Repo(session)
@@ -58,14 +67,21 @@ async def users_list(message: Message, session: AsyncSession):
     lines = ["👥 Список пользователей:"]
     for u in users:
         status = "✅" if u.is_active else "⛔"
-        lines.append(f"{status} {u.telegram_id} — {u.name} ({u.role.value})")
+        lines.append(f"{status} {u.telegram_id} — {u.name} ({role_ru(u.role)})")
+
+    audit.info("users.list | tg_id=%s | count=%s", message.from_user.id, len(users))
     await message.answer("\n".join(lines), reply_markup=users_menu())
 
 
 @router.message(lambda m: m.text == "🟢 Добавить")
-async def users_add_start(message: Message, session: AsyncSession, state: FSMContext):
+async def users_add_start(
+    message: Message, session: AsyncSession, state: FSMContext, user
+):
     if not await _is_owner(session, message.from_user.id):
-        await message.answer("⛔ Только владелец.", reply_markup=main_menu())
+        audit.info(
+            "auth.denied | tg_id=%s | action=users_add_start", message.from_user.id
+        )
+        await message.answer("⛔ Только владелец.", reply_markup=main_menu(user.role))
         return
 
     await state.set_state(UserAdminFlow.add_id)
@@ -75,10 +91,13 @@ async def users_add_start(message: Message, session: AsyncSession, state: FSMCon
 
 
 @router.message(UserAdminFlow.add_id)
-async def users_add_id(message: Message, session: AsyncSession, state: FSMContext):
+async def users_add_id(
+    message: Message, session: AsyncSession, state: FSMContext, user
+):
     if not await _is_owner(session, message.from_user.id):
         await state.clear()
-        await message.answer("⛔ Только владелец.", reply_markup=main_menu())
+        audit.info("auth.denied | tg_id=%s | action=users_add_id", message.from_user.id)
+        await message.answer("⛔ Только владелец.", reply_markup=main_menu(user.role))
         return
 
     t = (message.text or "").strip()
@@ -94,10 +113,15 @@ async def users_add_id(message: Message, session: AsyncSession, state: FSMContex
 
 
 @router.message(UserAdminFlow.add_name)
-async def users_add_name(message: Message, session: AsyncSession, state: FSMContext):
+async def users_add_name(
+    message: Message, session: AsyncSession, state: FSMContext, user
+):
     if not await _is_owner(session, message.from_user.id):
         await state.clear()
-        await message.answer("⛔ Только владелец.", reply_markup=main_menu())
+        audit.info(
+            "auth.denied | tg_id=%s | action=users_add_name", message.from_user.id
+        )
+        await message.answer("⛔ Только владелец.", reply_markup=main_menu(user.role))
         return
 
     name = (message.text or "").strip()
@@ -109,42 +133,76 @@ async def users_add_name(message: Message, session: AsyncSession, state: FSMCont
 
     await state.update_data(new_name=name)
     await state.set_state(UserAdminFlow.add_role)
-    await message.answer("Роль? owner / viewer / worker", reply_markup=cancel_menu())
+
+    kb = roles_inline_kb(prefix="user_add_role").as_markup()
+    await message.answer("Выберите роль кнопкой:", reply_markup=kb)
 
 
-@router.message(UserAdminFlow.add_role)
-async def users_add_role(message: Message, session: AsyncSession, state: FSMContext):
-    if not await _is_owner(session, message.from_user.id):
+@router.callback_query(
+    lambda c: c.data and c.data.startswith("user_add_role:"), UserAdminFlow.add_role
+)
+async def users_add_role_cb(
+    callback: CallbackQuery, session: AsyncSession, state: FSMContext, user
+):
+    if not await _is_owner(session, callback.from_user.id):
         await state.clear()
-        await message.answer("⛔ Только владелец.", reply_markup=main_menu())
+        audit.info(
+            "auth.denied | tg_id=%s | action=users_add_role_cb", callback.from_user.id
+        )
+        await callback.message.answer(
+            "⛔ Только владелец.", reply_markup=main_menu(user.role)
+        )
+        await callback.answer()
         return
 
-    role = _role_from_text(message.text)
+    raw = callback.data.split(":", 1)[1]
+    role_map = {
+        "owner": UserRole.owner,
+        "worker": UserRole.worker,
+        "viewer": UserRole.viewer,
+    }
+    role = role_map.get(raw)
     if not role:
-        await message.answer(
-            "Введите роль: owner / viewer / worker", reply_markup=cancel_menu()
-        )
+        await callback.answer("Не понял роль.", show_alert=True)
         return
 
     data = await state.get_data()
     repo = Repo(session)
-    existing = await repo.get_user_by_tg(int(data["new_tg_id"]))
+
+    new_tg_id = int(data["new_tg_id"])
+    existing = await repo.get_user_by_tg(new_tg_id)
     if existing:
-        await message.answer(
+        await callback.message.answer(
             "Этот Telegram ID уже есть в базе.", reply_markup=users_menu()
         )
         await state.clear()
+        await callback.answer()
         return
 
-    await repo.create_user(int(data["new_tg_id"]), data["new_name"], role)
+    await repo.create_user(new_tg_id, data["new_name"], role)
+    audit.info(
+        "user.created | owner_tg=%s | new_tg=%s | role=%s",
+        callback.from_user.id,
+        new_tg_id,
+        role.value,
+    )
+
     await state.clear()
-    await message.answer("✅ Пользователь добавлен.", reply_markup=users_menu())
+    await callback.message.answer(
+        "✅ Пользователь добавлен.", reply_markup=users_menu()
+    )
+    await callback.answer()
 
 
 @router.message(lambda m: m.text == "🔴 Удалить")
-async def users_del_start(message: Message, session: AsyncSession, state: FSMContext):
+async def users_del_start(
+    message: Message, session: AsyncSession, state: FSMContext, user
+):
     if not await _is_owner(session, message.from_user.id):
-        await message.answer("⛔ Только владелец.", reply_markup=main_menu())
+        audit.info(
+            "auth.denied | tg_id=%s | action=users_del_start", message.from_user.id
+        )
+        await message.answer("⛔ Только владелец.", reply_markup=main_menu(user.role))
         return
 
     await state.set_state(UserAdminFlow.del_id)
@@ -154,10 +212,13 @@ async def users_del_start(message: Message, session: AsyncSession, state: FSMCon
 
 
 @router.message(UserAdminFlow.del_id)
-async def users_del_id(message: Message, session: AsyncSession, state: FSMContext):
+async def users_del_id(
+    message: Message, session: AsyncSession, state: FSMContext, user
+):
     if not await _is_owner(session, message.from_user.id):
         await state.clear()
-        await message.answer("⛔ Только владелец.", reply_markup=main_menu())
+        audit.info("auth.denied | tg_id=%s | action=users_del_id", message.from_user.id)
+        await message.answer("⛔ Только владелец.", reply_markup=main_menu(user.role))
         return
 
     t = (message.text or "").strip()
@@ -167,6 +228,10 @@ async def users_del_id(message: Message, session: AsyncSession, state: FSMContex
 
     repo = Repo(session)
     ok = await repo.delete_user(int(t))
+    audit.info(
+        "user.deleted | owner_tg=%s | target_tg=%s | ok=%s", message.from_user.id, t, ok
+    )
+
     await state.clear()
     await message.answer(
         "✅ Отключен." if ok else "Не найден.", reply_markup=users_menu()

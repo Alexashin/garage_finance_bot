@@ -37,3 +37,7 @@ def setup_logging(log_level: str = "INFO") -> None:
     file_handler.suffix = "%Y-%m-%d"
     file_handler.setFormatter(formatter)
     root.addHandler(file_handler)
+    logging.getLogger("aiogram").setLevel(logging.WARNING)
+    logging.getLogger("aiogram.event").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.engine").setLevel(logging.WARNING)
+    logging.getLogger("sqlalchemy.pool").setLevel(logging.WARNING)

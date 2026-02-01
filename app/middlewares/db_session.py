@@ -18,7 +18,7 @@ class DbSessionMiddleware(BaseMiddleware):
         event: TelegramObject,
         data: Dict[str, Any],
     ) -> Any:
-        async with self.session_maker() as session:  # type: AsyncSession
+        async with self.session_maker() as session:  # type: ignore # type: AsyncSession
             data["session"] = session
             try:
                 result = await handler(event, data)
