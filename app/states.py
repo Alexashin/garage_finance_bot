@@ -31,3 +31,8 @@ class UserAdminFlow(StatesGroup):
     add_name = State()
     add_role = State()
     del_id = State()
+
+
+class CategoryAdminFlow(StatesGroup):
+    add_name = State()
+    rename_name = State()

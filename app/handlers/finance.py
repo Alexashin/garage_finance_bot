@@ -30,7 +30,7 @@ def categories_kb(names: list[str]) -> ReplyKeyboardMarkup:
 
 
 @router.message(lambda m: m.text == "❌ Отмена")
-async def cancel_any(message: Message, state: FSMContext, user):
+async def cancel_any(message: Message, state: FSMContext, user: User | None):
     await state.clear()
     await message.answer("Ок, отменено.", reply_markup=main_menu(user.role))
 

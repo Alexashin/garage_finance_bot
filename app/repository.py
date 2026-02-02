@@ -4,6 +4,7 @@ from datetime import datetime
 
 from sqlalchemy import Select, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models import Category, CategoryKind, Operation, OperationType, User, UserRole
 
@@ -81,6 +82,61 @@ class Repo:
                     Category(kind=CategoryKind.expense, name=n.strip(), is_active=True)
                 )
 
+    async def get_category(self, category_id: int) -> Category | None:
+        res = await self.s.execute(select(Category).where(Category.id == category_id))
+        return res.scalar_one_or_none()
+
+    async def category_usage_count(self, category_id: int) -> int:
+        res = await self.s.execute(
+            select(func.count(Operation.id)).where(Operation.category_id == category_id)
+        )
+        return int(res.scalar_one())
+
+    async def create_category(self, kind: CategoryKind, name: str) -> Category:
+        name = (name or "").strip()
+        # защита от дублей среди активных
+        existing = await self.get_category_by_name(kind, name)
+        if existing:
+            return existing
+        cat = Category(kind=kind, name=name, is_active=True)
+        self.s.add(cat)
+        await self.s.flush()
+        return cat
+
+    async def rename_category(
+        self, category_id: int, new_name: str
+    ) -> tuple[bool, str]:
+        cat = await self.get_category(category_id)
+        if not cat or not cat.is_active:
+            return False, "Категория не найдена."
+
+        new_name = (new_name or "").strip()
+        if len(new_name) < 2:
+            return False, "Слишком короткое название."
+
+        # защита от дублей
+        dup = await self.get_category_by_name(cat.kind, new_name)
+        if dup and dup.id != cat.id:
+            return False, "Категория с таким названием уже есть."
+
+        cat.name = new_name
+        return True, "✅ Переименовано."
+
+    async def deactivate_category(self, category_id: int) -> tuple[bool, str]:
+        cat = await self.get_category(category_id)
+        if not cat or not cat.is_active:
+            return False, "Категория не найдена."
+
+        used = await self.category_usage_count(category_id)
+        if used > 0:
+            return (
+                False,
+                f"Нельзя удалить: категория используется в операциях ({used}).",
+            )
+
+        cat.is_active = False
+        return True, "✅ Категория удалена."
+
     # ----- Operations -----
     async def add_operation(
         self,
@@ -107,10 +163,23 @@ class Repo:
         start: datetime | None,
         end: datetime | None,
         limit: int | None = None,
+        created_by_id: int | None = None,
     ) -> list[Operation]:
-        stmt: Select = select(Operation).order_by(
-            Operation.created_at.desc()
-        )  # <-- DESC !
+        """Universal operations query.
+
+        Notes:
+        - `start/end` must be timezone-aware (because `created_at` is timestamptz).
+        - For worker/viewer "only my ops", pass `created_by_id`.
+        """
+        stmt: Select = (
+            select(Operation)
+            .options(
+                selectinload(Operation.category),
+                selectinload(Operation.created_by),
+            )
+            .order_by(Operation.created_at.desc())
+        )
+
         conds = []
         if op_types:
             conds.append(Operation.op_type.in_(op_types))
@@ -118,10 +187,13 @@ class Repo:
             conds.append(Operation.created_at >= start)
         if end:
             conds.append(Operation.created_at <= end)
+        if created_by_id:
+            conds.append(Operation.created_by_id == created_by_id)
         if conds:
             stmt = stmt.where(and_(*conds))
         if limit:
             stmt = stmt.limit(limit)
+
         res = await self.s.execute(stmt)
         return list(res.scalars().all())
 
@@ -129,10 +201,21 @@ class Repo:
         self,
         limit: int = 20,
         op_types: list[OperationType] | None = None,
+        created_by_id: int | None = None,
     ) -> list[Operation]:
-        stmt = select(Operation).order_by(Operation.created_at.desc()).limit(limit)
+        stmt = (
+            select(Operation)
+            .options(
+                selectinload(Operation.category),
+                selectinload(Operation.created_by),
+            )
+            .order_by(Operation.created_at.desc())
+            .limit(limit)
+        )
         if op_types:
             stmt = stmt.where(Operation.op_type.in_(op_types))
+        if created_by_id:
+            stmt = stmt.where(Operation.created_by_id == created_by_id)
         res = await self.s.execute(stmt)
         return list(res.scalars().all())
 
@@ -160,6 +243,10 @@ class Repo:
     ) -> list[Operation]:
         res = await self.s.execute(
             select(Operation)
+            .options(
+                selectinload(Operation.category),
+                selectinload(Operation.created_by),
+            )
             .join(User, User.id == Operation.created_by_id)
             .where(User.telegram_id == telegram_id)
             .order_by(Operation.created_at.desc())

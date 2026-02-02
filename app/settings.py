@@ -4,7 +4,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+    )
 
     # Telegram
     BOT_TOKEN: str
@@ -19,7 +21,7 @@ class Settings(BaseSettings):
 
     # App
     APP_ENV: str = "prod"
-    TZ: str = "Europe/Amsterdam"
+    TZ: str = "Europe/Moscow"
     LOG_LEVEL: str = "INFO"
 
     DEFAULT_INCOME_CATEGORIES: str = "Услуги,Продажи"

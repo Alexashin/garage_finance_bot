@@ -18,6 +18,10 @@ def main_menu(role: UserRole | None = None) -> ReplyKeyboardMarkup:
             1,
             [KeyboardButton(text="📊 Отчёты"), KeyboardButton(text="👥 Пользователи")],
         )
+        rows.insert(
+            2,
+            [KeyboardButton(text="🗂 Категории")],
+        )
     else:
         # Работнику/наблюдателю можно оставить быстрый отчёт
         rows.insert(1, [KeyboardButton(text="📊 Отчёты")])
