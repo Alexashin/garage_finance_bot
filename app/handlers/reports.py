@@ -114,6 +114,9 @@ def format_ops_lines(ops: list[Operation]) -> str:
         cat = getattr(op, "category", None)
         cat_name = getattr(cat, "name", None) or "—"
 
+        cp = getattr(op, "counterparty", None)
+        cp_name = getattr(cp, "name", None) or "—"
+
         created_by = getattr(op, "created_by", None)
         created_by_name = (
             getattr(created_by, "name", None) or f"#{getattr(op, 'created_by_id', '—')}"
@@ -121,7 +124,7 @@ def format_ops_lines(ops: list[Operation]) -> str:
 
         comment = getattr(op, "comment", None) or "—"
         lines.append(
-            f"{dt_s} | {t_s} | {amount} ₽ | {cat_name} | {created_by_name} | {comment}"
+            f"{dt_s} | {t_s} | {amount} ₽ | {cat_name} | {cp_name} | {created_by_name} | {comment}"
         )
 
     return "\n".join(lines) if lines else "Операций нет."

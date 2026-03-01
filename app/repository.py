@@ -228,7 +228,78 @@ class Repo:
         cp.is_active = False
         return True, "✅ Контрагент скрыт."
 
-    # ----- Operations -----
+    
+    # ----- Monthly expenses -----
+    async def list_monthly_expenses(self, active_only: bool = True) -> list[MonthlyExpense]:
+        stmt = (
+            select(MonthlyExpense)
+            .options(
+                selectinload(MonthlyExpense.category),
+                selectinload(MonthlyExpense.counterparty),
+            )
+            .order_by(MonthlyExpense.day_of_month.asc(), MonthlyExpense.title.asc())
+        )
+        if active_only:
+            stmt = stmt.where(MonthlyExpense.is_active.is_(True))
+        res = await self.s.execute(stmt)
+        return list(res.scalars().all())
+
+    async def get_monthly_expense(self, me_id: int) -> MonthlyExpense | None:
+        res = await self.s.execute(
+            select(MonthlyExpense)
+            .options(
+                selectinload(MonthlyExpense.category),
+                selectinload(MonthlyExpense.counterparty),
+            )
+            .where(MonthlyExpense.id == me_id)
+        )
+        return res.scalar_one_or_none()
+
+    async def create_monthly_expense(
+        self,
+        *,
+        title: str,
+        day_of_month: int,
+        amount: int,
+        category_id: int | None = None,
+        counterparty_id: int | None = None,
+        comment: str | None = None,
+    ) -> MonthlyExpense:
+        title = " ".join((title or "").split())
+        me = MonthlyExpense(
+            title=title,
+            day_of_month=int(day_of_month),
+            amount=int(amount),
+            category_id=category_id,
+            counterparty_id=counterparty_id,
+            comment=(comment or "").strip() or None,
+            is_active=True,
+        )
+        self.s.add(me)
+        await self.s.flush()
+        return me
+
+    async def deactivate_monthly_expense(self, me_id: int) -> tuple[bool, str]:
+        me = await self.get_monthly_expense(me_id)
+        if not me or not me.is_active:
+            return False, "Запись не найдена."
+        me.is_active = False
+        return True, "✅ Скрыто."
+
+    async def monthly_expense_applied(
+        self, me_id: int, year: int, month: int
+    ) -> bool:
+        marker = f"[ME:{me_id}:{year:04d}-{month:02d}]"
+        res = await self.s.execute(
+            select(func.count(Operation.id)).where(
+                Operation.op_type == OperationType.expense,
+                Operation.comment.ilike(f"{marker}%"),
+            )
+        )
+        return int(res.scalar_one()) > 0
+
+
+# ----- Operations -----
     async def add_operation(
         self,
         op_type: OperationType,
@@ -269,6 +340,7 @@ class Repo:
             .options(
                 selectinload(Operation.category),
                 selectinload(Operation.created_by),
+                selectinload(Operation.counterparty),
             )
             .order_by(Operation.created_at.desc())
         )
@@ -301,6 +373,7 @@ class Repo:
     #         .options(
     #             selectinload(Operation.category),
     #             selectinload(Operation.created_by),
+    #             selectinload(Operation.counterparty),
     #         )
     #         .order_by(Operation.created_at.desc())
     #         .limit(limit)
@@ -339,6 +412,7 @@ class Repo:
     #         .options(
     #             selectinload(Operation.category),
     #             selectinload(Operation.created_by),
+    #             selectinload(Operation.counterparty),
     #         )
     #         .join(User, User.id == Operation.created_by_id)
     #         .where(User.telegram_id == telegram_id)
