@@ -8,9 +8,17 @@ from aiogram.types import KeyboardButton, Message, ReplyKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.keyboards import cancel_menu, confirm_menu, main_menu, reserve_menu
-from app.models import Category, CategoryKind, OperationType, User, UserRole
+from app.models import (
+    Category,
+    CategoryKind,
+    OperationType,
+    User,
+    UserRole,
+    Counterparty,
+)
 from app.repository import Repo
 from app.states import ExpenseFlow, IncomeFlow, ReserveFlow
+from app.utils.guards import require_user
 from app.utils.money import parse_amount
 from app.handlers.common import render_balance_message
 
@@ -29,6 +37,13 @@ def categories_kb(names: list[str]) -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
 
 
+def counterparties_kb(names: list[str]) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(text="— Без контрагента")]]
+    rows += [[KeyboardButton(text=n)] for n in names]
+    rows.append([KeyboardButton(text="❌ Отмена")])
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True)
+
+
 @router.message(lambda m: m.text == "❌ Отмена")
 async def cancel_any(message: Message, state: FSMContext, user: User | None):
     await state.clear()
@@ -37,13 +52,10 @@ async def cancel_any(message: Message, state: FSMContext, user: User | None):
 
 # ---------- INCOME ----------
 @router.message(lambda m: m.text == "🟢 Доход")
-async def start_income(message: Message, session: AsyncSession, state: FSMContext):
-    repo = Repo(session)
-    user = await repo.get_user_by_tg(message.from_user.id)
-    if not user:
-        audit.info("auth.denied | tg_id=%s | reason=no_user", message.from_user.id)
-        await message.answer("⛔ Доступ запрещён.")
+async def start_income(message: Message, state: FSMContext, user: User | None):
+    if not await require_user(message, user):
         return
+
     if user.role == UserRole.viewer:
         audit.info(
             "auth.denied | tg_id=%s | user_id=%s | role=viewer | action=add_income",
@@ -175,12 +187,8 @@ async def income_confirm(message: Message, session: AsyncSession, state: FSMCont
 
 # ---------- EXPENSE ----------
 @router.message(lambda m: m.text == "🔴 Расход")
-async def start_expense(message: Message, session: AsyncSession, state: FSMContext):
-    repo = Repo(session)
-    user = await repo.get_user_by_tg(message.from_user.id)
-    if not user:
-        audit.info("auth.denied | tg_id=%s | reason=no_user", message.from_user.id)
-        await message.answer("⛔ Доступ запрещён.")
+async def start_expense(message: Message, state: FSMContext, user: User | None):
+    if not await require_user(message, user):
         return
     if user.role == UserRole.viewer:
         audit.info(
@@ -248,6 +256,51 @@ async def expense_category(message: Message, session: AsyncSession, state: FSMCo
         return
 
     await state.update_data(category_id=cat.id)
+    cps = await repo.list_counterparties(active_only=True)
+    if not cps:
+        # если контрагентов нет — пропускаем шаг
+        await state.update_data(counterparty_id=None)
+        await state.set_state(ExpenseFlow.comment)
+        await message.answer(
+            "Комментарий (необязательно). Чтобы пропустить — отправь /skip",
+            reply_markup=cancel_menu(),
+        )
+        return
+
+    await state.set_state(ExpenseFlow.counterparty)
+    await message.answer(
+        "Выберите контрагента (или '— Без контрагента'):",
+        reply_markup=counterparties_kb([c.name for c in cps]),
+    )
+
+
+@router.message(ExpenseFlow.counterparty)
+async def expense_counterparty(
+    message: Message, session: AsyncSession, state: FSMContext
+):
+    repo = Repo(session)
+    text = (message.text or "").strip()
+
+    if text in ("— Без контрагента", "-", "—"):
+        await state.update_data(counterparty_id=None, counterparty_name="—")
+        await state.set_state(ExpenseFlow.comment)
+        await message.answer(
+            "Комментарий (необязательно). Чтобы пропустить — отправь /skip",
+            reply_markup=cancel_menu(),
+        )
+        return
+
+    # ищем контрагента по имени из кнопки
+    cps = await repo.list_counterparties(active_only=True)
+    cp = next((c for c in cps if c.name == text), None)
+    if not cp:
+        await message.answer(
+            "Выберите контрагента кнопкой:",
+            reply_markup=counterparties_kb([c.name for c in cps]),
+        )
+        return
+
+    await state.update_data(counterparty_id=cp.id, counterparty_name=cp.name)
     await state.set_state(ExpenseFlow.comment)
     await message.answer(
         "Комментарий (необязательно). Чтобы пропустить — отправь /skip",
@@ -267,10 +320,13 @@ async def expense_comment(message: Message, session: AsyncSession, state: FSMCon
     await state.update_data(comment=comment)
     await state.set_state(ExpenseFlow.confirm)
 
+    cp_name = data.get("counterparty_name") or "—"
+
     await message.answer(
         "Подтвердите расход:\n\n"
         f"💸 Сумма: {amt} ₽\n"
         f"🏷 Категория: {cat_obj.name if cat_obj else ''}\n"
+        f"🏢 Контрагент: {cp_name}\n"
         f"📝 Комментарий: {comment or '—'}",
         reply_markup=confirm_menu(),
     )
@@ -301,14 +357,16 @@ async def expense_confirm(message: Message, session: AsyncSession, state: FSMCon
         category_id=int(data["category_id"]),
         comment=data.get("comment"),
         created_by_id=user.id,
+        counterparty_id=data.get("counterparty_id"),
     )
 
     audit.info(
-        "op.added | user_id=%s | tg_id=%s | type=expense | amount=%s | category_id=%s",
+        "op.added | user_id=%s | tg_id=%s | type=expense | amount=%s | category_id=%s | counterparty_id=%s",
         user.id,
         user.telegram_id,
         data["amount"],
         data["category_id"],
+        data.get("counterparty_id"),
     )
 
     await state.clear()
@@ -320,25 +378,20 @@ async def expense_confirm(message: Message, session: AsyncSession, state: FSMCon
 
 # ---------- RESERVE ----------
 @router.message(lambda m: m.text == "🛡 Резерв")
-async def reserve_main(message: Message, session: AsyncSession):
-    repo = Repo(session)
-    user = await repo.get_user_by_tg(message.from_user.id)
-    if not user:
-        audit.info("auth.denied | tg_id=%s | reason=no_user", message.from_user.id)
-        await message.answer("⛔ Доступ запрещён.")
-        return
+async def reserve_main(message: Message, session: AsyncSession, user: User | None):
 
+    if not await require_user(message, user):
+        return
+    repo = Repo(session)
     text = await render_balance_message(repo)
     await message.answer("🛡 Резерв\n\n" + text, reply_markup=reserve_menu())
 
 
 @router.message(lambda m: m.text == "🟢 В резерв")
-async def reserve_add_start(message: Message, session: AsyncSession, state: FSMContext):
-    repo = Repo(session)
-    user = await repo.get_user_by_tg(message.from_user.id)
-    if not user:
-        audit.info("auth.denied | tg_id=%s | reason=no_user", message.from_user.id)
-        await message.answer("⛔ Доступ запрещён.")
+async def reserve_add_start(
+    message: Message, session: AsyncSession, state: FSMContext, user: User | None
+):
+    if not await require_user(message, user):
         return
     if user.role == UserRole.viewer:
         audit.info(
@@ -400,13 +453,9 @@ async def reserve_add_amount(
 
 @router.message(lambda m: m.text == "🔴 Из резерва")
 async def reserve_remove_start(
-    message: Message, session: AsyncSession, state: FSMContext
+    message: Message, session: AsyncSession, state: FSMContext, user: User | None
 ):
-    repo = Repo(session)
-    user = await repo.get_user_by_tg(message.from_user.id)
-    if not user:
-        audit.info("auth.denied | tg_id=%s | reason=no_user", message.from_user.id)
-        await message.answer("⛔ Доступ запрещён.")
+    if not await require_user(message, user):
         return
     if user.role == UserRole.viewer:
         audit.info(
@@ -470,13 +519,12 @@ async def reserve_remove_amount(
 
 
 @router.message(lambda m: m.text == "Назад")
-async def back_to_menu(message: Message, state: FSMContext, session: AsyncSession):
+async def back_to_menu(
+    message: Message, state: FSMContext, session: AsyncSession, user: User | None
+):
     await state.clear()
-    repo = Repo(session)
-    user = await repo.get_user_by_tg(message.from_user.id)
-    if not user:
-        audit.info("auth.denied | tg_id=%s | reason=no_user", message.from_user.id)
-        await message.answer("⛔ Доступ запрещён.")
+    if not await require_user(message, user):
         return
+    repo = Repo(session)
     text = await render_balance_message(repo)
     await message.answer(text, reply_markup=main_menu(user.role))

@@ -11,6 +11,7 @@ class IncomeFlow(StatesGroup):
 class ExpenseFlow(StatesGroup):
     amount = State()
     category = State()
+    counterparty = State()
     comment = State()
     confirm = State()
 
@@ -36,3 +37,20 @@ class UserAdminFlow(StatesGroup):
 class CategoryAdminFlow(StatesGroup):
     add_name = State()
     rename_name = State()
+
+
+class CounterpartyFlow(StatesGroup):
+    add_name = State()
+    add_comment = State()
+    edit_name = State()
+    edit_comment = State()
+    search = State()
+
+
+class MonthlyExpenseFlow(StatesGroup):
+    add_title = State()
+    add_day = State()
+    add_amount = State()
+    add_category = State()
+    add_counterparty = State()
+    add_comment = State()

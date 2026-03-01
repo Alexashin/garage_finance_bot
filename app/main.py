@@ -13,7 +13,7 @@ from app.middlewares.db_session import DbSessionMiddleware
 from app.middlewares.user import UserMiddleware
 from app.settings import Settings
 
-from app.handlers import admin, common, finance, reports
+from app.handlers import admin, common, finance, reports, counterparties
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +35,7 @@ async def main() -> None:
     dp.include_router(finance.router)
     dp.include_router(reports.router)
     dp.include_router(admin.router)
+    dp.include_router(counterparties.router)
 
     # Bootstrap DB data on startup
     async with session_maker() as session:

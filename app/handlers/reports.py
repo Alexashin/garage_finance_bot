@@ -13,11 +13,10 @@ from aiogram.types import FSInputFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.handlers.common import render_balance_message
-from app.keyboards import main_menu
-from app.models import OperationType, UserRole, User
+from app.models import Operation, OperationType, UserRole, User
 from app.repository import Repo
 from app.utils.csv_export import export_operations_csv
-from app.utils.guards import require_owner_callback, require_user
+from app.utils.guards import require_user, require_user_callback
 
 logger = logging.getLogger(__name__)
 audit = logging.getLogger("audit")
@@ -43,10 +42,10 @@ def report_kind_inline(prefix: str = "rk") -> InlineKeyboardBuilder:
 
 def report_period_inline(prefix: str = "rp") -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
+    kb.button(text="1 день", callback_data=f"{prefix}:1")
+    kb.button(text="3 дня", callback_data=f"{prefix}:3")
     kb.button(text="7 дней", callback_data=f"{prefix}:7")
-    kb.button(text="14 дней", callback_data=f"{prefix}:14")
-    kb.button(text="30 дней", callback_data=f"{prefix}:30")
-    kb.button(text="Свой период", callback_data=f"{prefix}:custom")
+    kb.button(text="Свой период (CSV)", callback_data=f"{prefix}:custom")
     kb.adjust(1)
     return kb
 
@@ -105,7 +104,7 @@ def _type_ru(t: OperationType | None) -> str:
     return "—"
 
 
-def format_ops_lines(ops) -> str:
+def format_ops_lines(ops: list[Operation]) -> str:
     lines = []
     for op in ops:
         dt_s = _fmt_dt_msk(getattr(op, "created_at", None))
@@ -128,6 +127,67 @@ def format_ops_lines(ops) -> str:
     return "\n".join(lines) if lines else "Операций нет."
 
 
+def _day_title(d, today):
+    if d == today:
+        return "Сегодня"
+    if d == (today - timedelta(days=1)):
+        return "Вчера"
+    return d.strftime("%d.%m.%Y")
+
+
+def format_ops_compact_by_day(ops: list, *, is_owner: bool) -> str:
+    """
+    Компактный вывод по дням:
+    Сегодня:
+    🟢Андрей 5000 Продажа "комм"
+    ...
+    """
+    if not ops:
+        return "Операций за период нет."
+
+    # Группируем по дате в MSK
+    by_day = {}
+    for o in ops:
+        dt_msk = o.created_at.astimezone(MSK)
+        d = dt_msk.date()
+        by_day.setdefault(d, []).append((dt_msk, o))
+
+    today = datetime.now(MSK).date()
+    days_sorted = sorted(by_day.keys(), reverse=True)
+
+    lines: list[str] = []
+    for d in days_sorted:
+        lines.append(f"{_day_title(d, today)}:")
+        items = sorted(by_day[d], key=lambda x: x[0], reverse=True)
+        for _, o in items:
+            icon = (
+                "🟢"
+                if o.op_type == OperationType.income
+                else "🔴" if o.op_type == OperationType.expense else "🛡"
+            )
+            who = ""
+            if is_owner:
+                created_by = getattr(o, "created_by", None)
+                who = (
+                    getattr(created_by, "name", None)
+                    or f"#{getattr(o, 'created_by_id', '—')}"
+                ).strip()
+            cat = getattr(getattr(o, "category", None), "name", None) or "—"
+            comm = (getattr(o, "comment", None) or "").strip()
+
+            if is_owner:
+                base = f"{icon}{who} {o.amount} {cat}"
+            else:
+                base = f"{icon}{o.amount} {cat}"
+
+            if comm:
+                base += f' "{comm}"'
+            lines.append(base)
+        lines.append("")
+
+    return "\n".join(lines).strip()
+
+
 # async def _require_user(repo: Repo, tg_id: int):
 #     user = await repo.get_user_by_tg(tg_id)
 #     return user
@@ -146,7 +206,6 @@ async def _generate_report_text(
     op_types = _op_types_from_kind(kind)
     created_by_id = _scope_created_by_id(user)
 
-    # В БД сравниваем в UTC (created_at = timestamptz)
     start = _to_utc(start_msk)
     end = _to_utc(end_msk)
 
@@ -160,18 +219,28 @@ async def _generate_report_text(
     income_sum = sum(o.amount for o in ops if o.op_type == OperationType.income)
     expense_sum = sum(o.amount for o in ops if o.op_type == OperationType.expense)
 
+    # Баланс можно оставить (коротко)
     bal_text = await render_balance_message(repo)
 
-    kind_ru = "Всё" if kind == "all" else ("Доходы" if kind == "income" else "Расходы")
-    period_ru = f"{start_msk.strftime('%d.%m.%Y')} — {end_msk.strftime('%d.%m.%Y')}"
+    # Заголовок — компактный (как ты хочешь)
+    header = (
+        f"🟢 Доходы: {income_sum} ₽\n"
+        f"🔴 Расходы: {expense_sum} ₽\n\n"
+        f"{bal_text}\n\n"
+    )
 
-    header = f"📊 Отчёт\nПоказано: {kind_ru}\nПериод: {period_ru}\n\n{bal_text}\n\n🟢 Доходы: {income_sum} ₽\n🔴 Расходы: {expense_sum} ₽\n\n"
-    tail = ops[:20]
-    body = "Последние 20 операций за период:\n" + format_ops_lines(tail)
+    is_owner = bool(user and user.role == UserRole.owner)
+    body = format_ops_compact_by_day(ops, is_owner=is_owner)
 
-    if user and user.role == UserRole.owner:
-        body += "\n\n(В строках указано, кто внёс операцию.)"
-    else:
+    # Защита от простыни в чат: ограничим длину сообщения по строкам
+    lines = body.splitlines()
+    MAX_LINES = 80
+    if len(lines) > MAX_LINES:
+        body = "\n".join(lines[:MAX_LINES]).rstrip()
+        body += "\n\n…Операций много. Для полного списка используйте CSV."
+
+    # Примечание по области видимости
+    if not is_owner:
         body += "\n\n(Показаны только ваши операции.)"
 
     return header + body, ops
@@ -194,7 +263,7 @@ async def reports_main(message: Message, state: FSMContext, user: User | None):
 async def report_pick_kind(
     callback: CallbackQuery, state: FSMContext, user: User | None
 ):
-    if not await require_owner_callback(callback, user, action="report_pick_kind"):
+    if not await require_user_callback(callback, user, action="report_pick_kind"):
         return
 
     kind = callback.data.split(":", 1)[1]  # all/income/expense
@@ -207,39 +276,57 @@ async def report_pick_kind(
 
 @router.callback_query(lambda c: c.data and c.data.startswith("rp:"))
 async def report_pick_period(
-    callback: CallbackQuery, session: AsyncSession, state: FSMContext, user: User | None
+    callback: CallbackQuery,
+    session: AsyncSession,
+    state: FSMContext,
+    user: User | None,
 ):
-    repo = Repo(session)
-    if not await require_owner_callback(callback, user, action="report_pick_period"):
+    if not await require_user_callback(callback, user, action="report_pick_period"):
         return
-    period = callback.data.split(":", 1)[1]  # 7/14/30/custom
+
+    repo = Repo(session)
+
+    period = callback.data.split(":", 1)[1]  # 1/3/7/custom
     data = await state.get_data()
     kind = data.get("report_kind", "all")
 
+    # 1) Кастомный период — переходим в FSM ввода дат (дальше CSV в report_custom_end)
     if period == "custom":
         await state.set_state(ReportCustomPeriod.start_date)
         await callback.message.answer("Введите дату начала (ДД.ММ.ГГГГ):")
         await callback.answer()
         return
 
-    days = int(period)
+    # 2) Быстрые пресеты 1/3/7 — делаем компактный отчёт текстом
+    try:
+        days = int(period)
+    except ValueError:
+        await callback.answer("Неизвестный период.", show_alert=True)
+        return
+
+    if days not in (1, 3, 7):
+        await callback.answer(
+            "Доступны пресеты: 1/3/7 дней или свой период.", show_alert=True
+        )
+        return
+
     start_msk, end_msk = _period_from_days_msk(days)
 
     text, ops = await _generate_report_text(repo, user, kind, start_msk, end_msk)
 
-    # Для owner сохраняем параметры отчёта, чтобы можно было выгрузить CSV
-    if user.role == UserRole.owner:
-        await state.update_data(
-            last_report=dict(
-                kind=kind,
-                start_utc=_to_utc(start_msk).isoformat(),
-                end_utc=_to_utc(end_msk).isoformat(),
-            )
-        )
-        kb = owner_export_inline(prefix="re").as_markup()
-        await callback.message.answer(text, reply_markup=kb)
-    else:
-        await callback.message.answer(text, reply_markup=main_menu(user.role))
+    # last_report сохраняем для ВСЕХ (нужно для CSV-кнопки)
+    await state.update_data(
+        last_report={
+            "kind": kind,
+            "start_utc": _to_utc(start_msk).isoformat(),
+            "end_utc": _to_utc(end_msk).isoformat(),
+        }
+    )
+
+    kb = owner_export_inline(
+        prefix="re"
+    ).as_markup()  # можно переименовать потом, но ок
+    await callback.message.answer(text, reply_markup=kb)
 
     audit.info(
         "report.generated | tg_id=%s | role=%s | kind=%s | period=%s | ops=%s",
@@ -259,7 +346,7 @@ async def report_custom_start(message: Message, state: FSMContext, user: User | 
 
     raw = (message.text or "").strip()
     try:
-        start_date = datetime.strptime(raw, "%d.%m.%Y").replace(tzinfo=MSK)
+        datetime.strptime(raw, "%d.%m.%Y")
     except ValueError:
         await message.answer("Не понял дату. Формат: ДД.ММ.ГГГГ (например 05.02.2026)")
         return
@@ -305,42 +392,42 @@ async def report_custom_end(
     start_msk, _ = _msk_day_bounds(start_date)
     _, end_msk = _msk_day_bounds(end_date)
 
-    text, ops = await _generate_report_text(repo, user, kind, start_msk, end_msk)
+    op_types = _op_types_from_kind(kind)
+    created_by_id = _scope_created_by_id(user)
 
-    if user.role == UserRole.owner:
-        await state.update_data(
-            last_report=dict(
-                kind=kind,
-                start_utc=_to_utc(start_msk).isoformat(),
-                end_utc=_to_utc(end_msk).isoformat(),
-            )
-        )
-        kb = owner_export_inline(prefix="re").as_markup()
-        await message.answer(text, reply_markup=kb)
-    else:
-        await message.answer(text, reply_markup=main_menu(user.role))
+    ops = await repo.list_operations_filtered(
+        op_types=op_types,
+        start=_to_utc(start_msk),
+        end=_to_utc(end_msk),
+        created_by_id=created_by_id,
+    )
+
+    path = export_operations_csv(ops)
+    await message.answer_document(
+        FSInputFile(path, filename="report.csv"),
+        caption="📄 CSV-отчёт за выбранный период (открывается в Excel).",
+    )
 
     audit.info(
-        "report.generated | tg_id=%s | role=%s | kind=%s | period=custom | ops=%s",
+        "report.export.csv | tg_id=%s | role=%s | kind=%s | period=custom | ops=%s",
         message.from_user.id,
         user.role.value,
         kind,
         len(ops),
     )
-    # Очищаем только state-машину, но для владельца оставляем last_report для экспорта
-    if user.role == UserRole.owner:
-        await state.set_state(None)
-    else:
-        await state.clear()
+
+    await state.clear()
+    return
 
 
 @router.callback_query(lambda c: c.data == "re:csv")
 async def report_export_csv(
     callback: CallbackQuery, session: AsyncSession, state: FSMContext, user: User | None
 ):
-    repo = Repo(session)
-    if not await require_owner_callback(callback, user, action="report_export_csv"):
+    if not await require_user_callback(callback, user, action="report_export_csv"):
         return
+
+    repo = Repo(session)
 
     data = await state.get_data()
     last = data.get("last_report")
@@ -357,7 +444,14 @@ async def report_export_csv(
         return
 
     op_types = _op_types_from_kind(kind)
-    ops = await repo.list_operations_filtered(op_types=op_types, start=start, end=end)
+    created_by_id = _scope_created_by_id(user)  # worker/viewer -> свои, owner -> все
+
+    ops = await repo.list_operations_filtered(
+        op_types=op_types,
+        start=start,
+        end=end,
+        created_by_id=created_by_id,
+    )
 
     path = export_operations_csv(ops)
     await callback.message.answer_document(
@@ -366,8 +460,9 @@ async def report_export_csv(
     )
 
     audit.info(
-        "report.export.csv | owner_tg=%s | kind=%s | ops=%s",
+        "report.export.csv | tg_id=%s | role=%s | kind=%s | ops=%s",
         callback.from_user.id,
+        user.role.value,
         kind,
         len(ops),
     )

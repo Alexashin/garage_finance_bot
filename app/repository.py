@@ -6,7 +6,16 @@ from sqlalchemy import Select, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models import Category, CategoryKind, Operation, OperationType, User, UserRole
+from app.models import (
+    Category,
+    CategoryKind,
+    Operation,
+    OperationType,
+    User,
+    UserRole,
+    Counterparty,
+    MonthlyExpense,
+)
 
 
 class Repo:
@@ -32,10 +41,23 @@ class Repo:
         return list(res.scalars().all())
 
     async def create_user(self, telegram_id: int, name: str, role: UserRole) -> User:
-        user = User(telegram_id=telegram_id, name=name, role=role, is_active=True)
-        self.s.add(user)
+        # 1) ищем существующего (включая неактивных)
+        res = await self.s.execute(select(User).where(User.telegram_id == telegram_id))
+        u = res.scalar_one_or_none()
+
+        if u:
+            # 2) "добавление заново" = реактивация + обновление полей
+            u.name = name
+            u.role = role
+            u.is_active = True
+            await self.s.flush()
+            return u
+
+        # 3) иначе создаём нового
+        u = User(telegram_id=telegram_id, name=name, role=role, is_active=True)
+        self.s.add(u)
         await self.s.flush()
-        return user
+        return u
 
     async def delete_user(self, telegram_id: int) -> bool:
         res = await self.s.execute(select(User).where(User.telegram_id == telegram_id))
@@ -137,6 +159,75 @@ class Repo:
         cat.is_active = False
         return True, "✅ Категория удалена."
 
+    # ----- Counterparties -----
+    async def list_counterparties(self, active_only: bool = True) -> list[Counterparty]:
+        stmt = select(Counterparty).order_by(Counterparty.name.asc())
+        if active_only:
+            stmt = stmt.where(Counterparty.is_active.is_(True))
+        res = await self.s.execute(stmt)
+        return list(res.scalars().all())
+
+    async def search_counterparties(
+        self, q: str, active_only: bool = True
+    ) -> list[Counterparty]:
+        q = (q or "").strip()
+        stmt = (
+            select(Counterparty)
+            .where(Counterparty.name.ilike(f"%{q}%"))
+            .order_by(Counterparty.name.asc())
+        )
+        if active_only:
+            stmt = stmt.where(Counterparty.is_active.is_(True))
+        res = await self.s.execute(stmt)
+        return list(res.scalars().all())
+
+    async def get_counterparty(self, cid: int) -> Counterparty | None:
+        res = await self.s.execute(select(Counterparty).where(Counterparty.id == cid))
+        return res.scalar_one_or_none()
+
+    async def create_counterparty(
+        self, name: str, comment: str | None = None
+    ) -> Counterparty:
+        name = " ".join((name or "").split())
+        cp = Counterparty(
+            name=name, comment=(comment or "").strip() or None, is_active=True
+        )
+        self.s.add(cp)
+        await self.s.flush()
+        return cp
+
+    async def update_counterparty(
+        self, cid: int, *, name: str | None = None, comment: str | None = None
+    ) -> tuple[bool, str]:
+        cp = await self.get_counterparty(cid)
+        if not cp or not cp.is_active:
+            return False, "Контрагент не найден."
+
+        if name is not None:
+            nm = " ".join((name or "").split())
+            if len(nm) < 2:
+                return False, "Слишком короткое название."
+            cp.name = nm
+
+        if comment is not None:
+            cp.comment = (comment or "").strip() or None
+
+        return True, "✅ Сохранено."
+
+    async def deactivate_counterparty(self, cid: int) -> tuple[bool, str]:
+        cp = await self.get_counterparty(cid)
+        if not cp or not cp.is_active:
+            return False, "Контрагент не найден."
+
+        used = await self.s.execute(
+            select(func.count(Operation.id)).where(Operation.counterparty_id == cid)
+        )
+        if int(used.scalar_one()) > 0:
+            return False, "Нельзя удалить: контрагент используется в операциях."
+
+        cp.is_active = False
+        return True, "✅ Контрагент скрыт."
+
     # ----- Operations -----
     async def add_operation(
         self,
@@ -144,6 +235,7 @@ class Repo:
         amount: int,
         created_by_id: int,
         category_id: int | None = None,
+        counterparty_id: int | None = None,
         comment: str | None = None,
     ) -> Operation:
         op = Operation(
@@ -151,6 +243,7 @@ class Repo:
             amount=amount,
             created_by_id=created_by_id,
             category_id=category_id,
+            counterparty_id=counterparty_id,
             comment=comment,
         )
         self.s.add(op)
@@ -197,27 +290,27 @@ class Repo:
         res = await self.s.execute(stmt)
         return list(res.scalars().all())
 
-    async def list_last_operations(
-        self,
-        limit: int = 20,
-        op_types: list[OperationType] | None = None,
-        created_by_id: int | None = None,
-    ) -> list[Operation]:
-        stmt = (
-            select(Operation)
-            .options(
-                selectinload(Operation.category),
-                selectinload(Operation.created_by),
-            )
-            .order_by(Operation.created_at.desc())
-            .limit(limit)
-        )
-        if op_types:
-            stmt = stmt.where(Operation.op_type.in_(op_types))
-        if created_by_id:
-            stmt = stmt.where(Operation.created_by_id == created_by_id)
-        res = await self.s.execute(stmt)
-        return list(res.scalars().all())
+    # async def list_last_operations(
+    #     self,
+    #     limit: int = 20,
+    #     op_types: list[OperationType] | None = None,
+    #     created_by_id: int | None = None,
+    # ) -> list[Operation]:
+    #     stmt = (
+    #         select(Operation)
+    #         .options(
+    #             selectinload(Operation.category),
+    #             selectinload(Operation.created_by),
+    #         )
+    #         .order_by(Operation.created_at.desc())
+    #         .limit(limit)
+    #     )
+    #     if op_types:
+    #         stmt = stmt.where(Operation.op_type.in_(op_types))
+    #     if created_by_id:
+    #         stmt = stmt.where(Operation.created_by_id == created_by_id)
+    #     res = await self.s.execute(stmt)
+    #     return list(res.scalars().all())
 
     async def sum_by_type(self, op_type: OperationType) -> int:
         res = await self.s.execute(
@@ -238,18 +331,18 @@ class Repo:
         available = balance_total - reserve_balance
         return balance_total, reserve_balance, available
 
-    async def list_operations_for_user(
-        self, telegram_id: int, limit: int = 50
-    ) -> list[Operation]:
-        res = await self.s.execute(
-            select(Operation)
-            .options(
-                selectinload(Operation.category),
-                selectinload(Operation.created_by),
-            )
-            .join(User, User.id == Operation.created_by_id)
-            .where(User.telegram_id == telegram_id)
-            .order_by(Operation.created_at.desc())
-            .limit(limit)
-        )
-        return list(res.scalars().all())
+    # async def list_operations_for_user(
+    #     self, telegram_id: int, limit: int = 50
+    # ) -> list[Operation]:
+    #     res = await self.s.execute(
+    #         select(Operation)
+    #         .options(
+    #             selectinload(Operation.category),
+    #             selectinload(Operation.created_by),
+    #         )
+    #         .join(User, User.id == Operation.created_by_id)
+    #         .where(User.telegram_id == telegram_id)
+    #         .order_by(Operation.created_at.desc())
+    #         .limit(limit)
+    #     )
+    #     return list(res.scalars().all())
